@@ -21,10 +21,23 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.ilmaverick.appdiary"
+      "package": "com.ilmaverick.appdiary",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Permetti all'app di accedere al microfono per registrare i diari."
+        }
+      ],
+      "expo-asset"
+    ]
   }
 }
