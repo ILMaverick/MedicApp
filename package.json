@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "main": "expo/AppEntry.js",
   "scripts": {
-    "start": "cross-env LANG=en_US expo start --dev-client",
-    "android": "cross-env LANG=en_US expo run:android --device",
-    "ios": "cross-env LANG=en_US expo run:ios",
-    "web": "cross-env LANG=en_US expo start --web"
+    "start": "expo start --dev-client",
+    "android": "expo run:android --device",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
   },
   "dependencies": {
     "@fugood/react-native-audio-pcm-stream": "^1.1.4",
