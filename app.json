@@ -49,7 +49,17 @@
         "expo-build-properties",
         {
           "android": {
-            "usesCleartextTraffic": true
+            "usesCleartextTraffic": true,
+            "kotlinVersion": "2.1.20",
+            "packagingOptions": {
+              "pickFirst": [
+                "**/libc++_shared.so",
+                "**/libomp.so",
+                "**/libggml.so",
+                "**/libfbjni.so",
+                "META-INF/**"
+              ]
+            }
           }
         }
       ]
