@@ -43,7 +43,7 @@ export function useVoiceTranscription() {
    * Viene eseguito una sola volta al mount.
    */
   useEffect(() => {
-    isMountedRef.current = true;
+    // isMountedRef.current = true;
 
     const loadModels = async () => {
       try {
@@ -57,32 +57,20 @@ export function useVoiceTranscription() {
         setError('Impossibile caricare i modelli AI');
         setStatus('Errore Modelli');
       } finally {
-        if (isMountedRef.current) {
-          setAreModelsLoading(false);
-        }
+        // if (isMountedRef.current) {
+        setAreModelsLoading(false);
+        // }
       }
     };
 
     loadModels();
 
     return () => {
-      isMountedRef.current = false;
+      // isMountedRef.current = false;
       cleanAll();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  /**
-   * Gestisce il toggle della registrazione (Start/Stop).
-   * @async
-   */
-  const handlePress = async () => {
-    if (isRecording) {
-      await stopRealtimeTranscription();
-    } else {
-      await startRealtimeTranscription();
-    }
-  };
 
   /**
    * Avvia la trascrizione in tempo reale.
@@ -160,12 +148,11 @@ export function useVoiceTranscription() {
       // Distruzione istanza per evitare bug audio al riavvio
       transcriberRef.current = null;
 
-      setIsRecording(false);
-      setStatus('Nota salvata');
+      setStatus('Trascrizione salvata');
       console.log('[VoiceTranscription] Stop completato');
 
       // Reset status a "Pronto" dopo 2 secondi
-      setTimeout(() => setStatus('Pronto'), 2000);
+      setTimeout(() => setIsRecording(false), 2000);
     } catch (err) {
       console.error('[VoiceTranscription] Errore stop:', err);
       transcriberRef.current = null;
@@ -181,6 +168,7 @@ export function useVoiceTranscription() {
     finalResult,
     status,
     error,
-    handlePress,
+    startRealtimeTranscription,
+    stopRealtimeTranscription,
   };
 }

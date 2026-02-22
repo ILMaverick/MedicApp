@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLlamaService } from '../services/useLlamaService';
 
 export function useLlamaInference() {
@@ -8,10 +8,15 @@ export function useLlamaInference() {
 
   const { llamaContext, isLlamaReady, initLlamaContext } = useLlamaService();
 
+  // Assicura che l'init parta UNA sola volta
+  // const hasRequestedInit = useRef(false);
+
   // Inizializza il modello appena l'hook viene montato
   useEffect(() => {
-    initLlamaContext('Qwen 2.5 (0.5B)'); // TODO inserito modello piccolo per test
-  }, [initLlamaContext]);
+    setAiStatus('Modello AI in caricamento...');
+    initLlamaContext('Qwen 2.5 (1.5B)'); // TODO inserito modello grande per test
+    setAiStatus('Modello AI Pronto');
+  }, []);
 
   const generateResponse = async (userText: string) => {
     if (!llamaContext) {
@@ -30,30 +35,62 @@ export function useLlamaInference() {
       setAiStatus('Sto pensando...');
       setAiResponse('');
 
-      // Prompt Engineering specifico per Qwen/Llama 3
-      // Chiediamo un JSON puro
-      const systemPrompt = `Sei un assistente medico. Estrai i dati in JSON. Non aggiungere altro testo. 
-      Esempio: {"obbiettivo": "nota", "paziente": "Mario", "data": "oggi"}`;
+      const oggi = new Date().toLocaleDateString('it-IT');
+      const ora = new Date().toLocaleTimeString('it-IT');
 
-      // Formato ChatML
+      // Chiediamo un JSON puro
       const prompt = `<|im_start|>system
-      ${systemPrompt}<|im_end|>
-      <|im_start|>user
-      ${userText}<|im_end|>
-      <|im_start|>assistant
-      `;
+Regole per i campi:
+- "nota": devi copiare e incollare il testo dell'utente omettendo il nome e il cognome.
+- "paziente": estrai nome e cognome.
+- "data": "${oggi}".
+- "ora": "${ora}".
+
+Esempio di output desiderato:
+{
+  "nota": "il paziente ha la febbre",
+  "paziente": {"nome": "Mario", "cognome": "Rossi"},
+  "data": "${oggi}",
+  "ora": "${ora}"
+}
+<|im_end|>
+<|im_start|>user
+Testo da analizzare: "${userText}"
+<|im_end|>
+<|im_start|>assistant
+`;
 
       console.log('[Llama] Inizio inferenza...');
 
       const { text } = await llamaContext.completion(
         {
           prompt,
-          n_predict: 250, // Limitiamo la lunghezza per velocità
-          temperature: 0.1,
+          n_predict: 400, // Limitiamo la lunghezza per velocità
+          temperature: 0,
+          response_format: {
+            type: 'json_object',
+            schema: {
+              type: 'object',
+              properties: {
+                paziente: {
+                  type: 'object',
+                  properties: {
+                    nome: { type: 'string' },
+                    cognome: { type: 'string' },
+                  },
+                  required: ['nome', 'cognome'],
+                },
+                nota: { type: 'string' },
+                data: { type: 'string' },
+                ora: { type: 'string' },
+              },
+              required: ['paziente', 'nota', 'data', 'ora'],
+            },
+          },
           stop: ['<|im_end|>'], // Stop token
         },
         (data) => {
-          // Streaming della risposta (opzionale, ma bello da vedere)
+          // Streaming della risposta
           setAiResponse((prev) => prev + data.token);
         },
       );

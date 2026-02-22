@@ -37,17 +37,23 @@ export function useLlamaService() {
     return () => {
       if (llamaContext) {
         console.log('[Llama] Rilascio risorse RAM');
+        setIsLlamaReady(false);
         llamaContext.release().catch((err) => console.warn('Errore release:', err));
       }
     };
   }, [llamaContext]);
 
   const initLlamaContext = useCallback(async (modelName: string = 'Qwen 2.5 (0.5B)') => {
-    console.log(`[Llama] Richiesto modello: ${modelName}`);
+    if (llamaContext) {
+      console.log('[Llama] Init saltato: Contesto già pronto.');
+      setIsLlamaReady(true);
+      return;
+    }
 
+    console.log(`[Llama] Richiesto modello: ${modelName}`);
     const model = LLAMA_MODELS.find((m) => m.modelName === modelName);
     if (!model) {
-      console.error('[Llama] Modello non trovato nella lista');
+      console.error(`[Llama] Modello ${modelName} non trovato nella lista`);
       return;
     }
 
