@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import { useLlamaInference } from '../hooks/useLlamaInference';
 
@@ -6,8 +6,12 @@ export function useTranscriptionController() {
   const transcription = useVoiceTranscription();
   const ai = useLlamaInference();
 
-  const isGlobalLoading = transcription.areModelsLoading || !ai.isLlamaReady;
+  // Stato per nascondere il testo se l'utente annulla la nota
+  const [isCancelled, setIsCancelled] = useState(false);
+  // Stato per ricordare all'app che deve far partire l'AI appena Whisper si ferma
+  const [isConfirmed, setIsConfirmed] = useState(false);
 
+  const isGlobalLoading = transcription.areModelsLoading || !ai.isLlamaReady;
   const isBusy = transcription.isRecording || ai.isThinking;
 
   // Status combinati per averne uno solo da mostrare
@@ -19,23 +23,51 @@ export function useTranscriptionController() {
         ? transcription.status + ' - ' + ai.aiStatus
         : 'Pronto';
 
-  const handlePress = async () => {
+  // Funzione per quando l'utente avvia la registrazione
+  const handleStart = async () => {
+    setIsCancelled(false);
+    setIsConfirmed(false);
+    await transcription.startRealtimeTranscription();
+  };
+
+  // Funzione per quando l'utente annulla la registrazione. La trascrizione effettuata fino ad adesso viene cancellata.
+  const handleCancel = async () => {
+    setIsCancelled(true);
     if (transcription.isRecording) {
       await transcription.stopRealtimeTranscription();
-    } else {
-      await transcription.startRealtimeTranscription();
     }
   };
 
-  // Appena la trascrizione finisce, parte la risposta dell'AI
+  // Funzione per quando l'utente conferma la registrazione
+  const handleConfirm = async () => {
+    if (transcription.isRecording) {
+      await transcription.stopRealtimeTranscription();
+      setIsConfirmed(true);
+    }
+  };
+
+  // Aspetta che Whisper sia completamente fermo e abbia prodotto il testo finale. Successivamente fa partire Llama.
   useEffect(() => {
-    if (transcription.finalResult && ai.isLlamaReady) {
-      console.log(
-        '[Transcription Controller] Trascrizione Whisper terminata. Generazione risposta AI',
-      );
+    if (isConfirmed && !transcription.isRecording && transcription.finalResult && ai.isLlamaReady) {
+      console.log('[Transcription Controller] Trascrizione finita. Avvio AI...');
       ai.generateResponse(transcription.finalResult);
     }
-  }, [transcription.finalResult, ai.isLlamaReady]); // Rimosso ai.generateResponse dalle dipendenze per evitare loop
+  }, [transcription.isRecording, transcription.finalResult, ai.isLlamaReady, isConfirmed]);
+
+  // Determina cosa mostrare a video (nasconde se annullato)
+  const displayTranscription = isCancelled
+    ? ''
+    : transcription.realTimeResult || transcription.finalResult;
+
+  // Appena la trascrizione finisce, parte la risposta dell'AI
+  // useEffect(() => {
+  //   if (transcription.finalResult && ai.isLlamaReady) {
+  //     console.log(
+  //       '[Transcription Controller] Trascrizione Whisper terminata. Generazione risposta AI',
+  //     );
+  //     ai.generateResponse(transcription.finalResult);
+  //   }
+  // }, [transcription.finalResult, ai.isLlamaReady]);
 
   /**
    * Gestisce il toggle della registrazione (Start/Stop).
@@ -43,7 +75,7 @@ export function useTranscriptionController() {
    */
 
   return {
-    transcriptionText: transcription.realTimeResult || transcription.finalResult,
+    transcriptionText: displayTranscription,
     aiResponse: ai.aiResponse,
     status: currentStatus,
 
@@ -52,7 +84,9 @@ export function useTranscriptionController() {
     isLoadingModels: isGlobalLoading,
     canRecord: !isGlobalLoading && !isBusy,
 
-    handlePress,
+    handleStart,
+    handleConfirm,
+    handleCancel,
 
     debug: {
       isLlamaReady: ai.isLlamaReady,

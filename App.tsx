@@ -1,6 +1,6 @@
 /**
  * @file App.js
- * @description Punto di ingresso dell'applicazione "App - Diary".
+ * @description Punto di ingresso dell'applicazione "MedicApp".
  *
  * @author Matteo Pallotti - mat.100823
  */

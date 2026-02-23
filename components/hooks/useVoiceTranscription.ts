@@ -127,7 +127,7 @@ export function useVoiceTranscription() {
    * Attende 2 sec. per permettere all'AI di elaborare gli ultimi chunk audio (flush).
    * @async
    */
-  const stopRealtimeTranscription = async () => {
+  const stopRealtimeTranscription = async (isCancelled: boolean = false) => {
     try {
       setStatus('Elaborazione finale...');
 
@@ -135,8 +135,9 @@ export function useVoiceTranscription() {
         await transcriberRef.current.stop();
       }
 
+      // Attendo il Transcriber che fisce l'elaborazione
       console.log('[VoiceTranscription] Attesa flush Transcriber...');
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      setTimeout(() => 2000);
 
       const final = latestTextRef.current.trim();
 
@@ -147,12 +148,9 @@ export function useVoiceTranscription() {
 
       // Distruzione istanza per evitare bug audio al riavvio
       transcriberRef.current = null;
-
       setStatus('Trascrizione salvata');
       console.log('[VoiceTranscription] Stop completato');
-
-      // Reset status a "Pronto" dopo 2 secondi
-      setTimeout(() => setIsRecording(false), 2000);
+      setIsRecording(false);
     } catch (err) {
       console.error('[VoiceTranscription] Errore stop:', err);
       transcriberRef.current = null;
