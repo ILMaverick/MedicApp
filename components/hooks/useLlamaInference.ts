@@ -1,57 +1,79 @@
+/**
+ * @module LlamaInference
+ * @description Hook per gestire le richieste di inferenza testuale verso il modello Llama locale, passando un system prompt preconfigurato per l'estrazione JSON dei dati.
+ * @returns {Object} Oggetto con gli stati dell'AI (isReady, isThinking, error, ecc.) e le funzioni per inviare prompt o resettare le risposte.
+ */
 import { useState, useEffect, useRef } from 'react';
 import { useLlamaService } from '../services/useLlamaService';
+import { useSettings } from '../context/SettingsContext';
 
 export function useLlamaInference() {
-  const [aiResponse, setAiResponse] = useState('');
+  const [response, setResponse] = useState('');
+  const [isReady, setIsReady] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
-  const [aiStatus, setAiStatus] = useState('');
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
-  const { llamaContext, isLlamaReady, initLlamaContext } = useLlamaService();
+  const { settings } = useSettings();
+  const { llamaModelRef, initLlamaContext } = useLlamaService();
+  const isMountedRef = useRef<boolean>(true);
 
-  // Assicura che l'init parta UNA sola volta
-  // const hasRequestedInit = useRef(false);
-
-  // Inizializza il modello appena l'hook viene montato
+  /**
+   * @description Effetto "Mount/Update": Inizializza il contesto del modello Llama non appena l'hook viene montato o quando le impostazioni globali variano.
+   * Protegge le variazioni di stato tramite `isMountedRef`.
+   * @returns {Function} Funzione di cleanup per aggiornare il ref alla chiusura.
+   */
   useEffect(() => {
-    setAiStatus('Modello AI in caricamento...');
-    initLlamaContext('Qwen 2.5 (1.5B)'); // TODO inserito modello grande per test
-    setAiStatus('Modello AI Pronto');
-  }, []);
+    isMountedRef.current = true;
 
-  const generateResponse = async (userText: string) => {
-    if (!llamaContext) {
-      console.warn('Llama context non pronto.');
-      setAiStatus('Modello AI non caricato');
-      return;
-    }
+    const initLlama = async () => {
+      setIsReady(false);
+      setStatus(`Caricamento ${settings.llamaModel}...`);
+      await initLlamaContext(settings.llamaModel);
+      if (isMountedRef.current) {
+        setIsReady(true);
+        setStatus('Modello AI Pronto');
+      }
+    };
 
-    if (!userText || userText.trim().length < 2) {
-      console.warn('Testo utente troppo breve.');
-      return;
-    }
+    initLlama();
+
+    return () => {
+      isMountedRef.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.llamaModel]);
+
+  /**
+   * @description Invia il testo trascritto al modello SLM per l'estrazione dati basandosi su un prompt di sistema rigido. Si aspetta una risposta rigidamente formattata tramite un grammar constraint (`response_format`).
+   * @async
+   * @param {string} userText - Il testo grezzo appena trascritto da elaborare.
+   * @returns {Promise<void>}
+   * @throws {Error} Nel caso in cui l'inferenza di llama.cpp restituisca errori o blocchi, lo stato `error` viene esposto all'esterno.
+   */
+  const generateResponse = async (userText: string): Promise<void> => {
+    if (!llamaModelRef.current || !userText || userText.trim().length < 2) return;
 
     try {
       setIsThinking(true);
-      setAiStatus('Sto pensando...');
-      setAiResponse('');
+      setStatus('Sto pensando...');
+      setResponse('');
 
-      const oggi = new Date().toLocaleDateString('it-IT');
-      const ora = new Date().toLocaleTimeString('it-IT');
+      setError(null);
 
-      // Chiediamo un JSON puro
       const prompt = `<|im_start|>system
-Regole per i campi:
-- "nota": devi copiare e incollare il testo dell'utente omettendo il nome e il cognome.
-- "paziente": estrai nome e cognome.
-- "data": "${oggi}".
-- "ora": "${ora}".
+Sei un assistente specializzato in estrazione dati. Il tuo unico scopo è estrarre informazioni e restituire UNICAMENTE un oggetto JSON valido.
+TASSATIVO: NON aggiungere NESSUN campo oltre a "note" e "patient". Sono severamente vietati campi come età, date, sesso o misure.
 
-Esempio di output desiderato:
+Regole per i campi:
+- "note": riscrivi il testo dell'utente RIMUOVENDO il nome e il cognome, siano essi scritti in minuscolo o in maiuscolo. La frase deve mantenere il suo senso medico.
+- "patient": inserisci nome e cognome, con entrambe le iniziali in maiuscolo.
+
+Esempio di trasformazione:
+Testo utente: "Mario rossi ha una forte tosse."
 {
-  "nota": "il paziente ha la febbre",
-  "paziente": {"nome": "Mario", "cognome": "Rossi"},
-  "data": "${oggi}",
-  "ora": "${ora}"
+  "note": "Il paziente ha una forte tosse.",
+  "patient": {"name": "Mario", "surname": "Rossi"}
 }
 <|im_end|>
 <|im_start|>user
@@ -60,57 +82,56 @@ Testo da analizzare: "${userText}"
 <|im_start|>assistant
 `;
 
-      console.log('[Llama] Inizio inferenza...');
-
-      const { text } = await llamaContext.completion(
-        {
-          prompt,
-          n_predict: 400, // Limitiamo la lunghezza per velocità
-          temperature: 0,
-          response_format: {
-            type: 'json_object',
-            schema: {
-              type: 'object',
-              properties: {
-                paziente: {
-                  type: 'object',
-                  properties: {
-                    nome: { type: 'string' },
-                    cognome: { type: 'string' },
-                  },
-                  required: ['nome', 'cognome'],
-                },
-                nota: { type: 'string' },
-                data: { type: 'string' },
-                ora: { type: 'string' },
+      console.log('[LlamaInference] Inizio inferenza...');
+      const { text } = await llamaModelRef.current.completion({
+        prompt,
+        n_predict: 400,
+        temperature: 0,
+        response_format: {
+          type: 'json_object',
+          schema: {
+            type: 'object',
+            properties: {
+              patient: {
+                type: 'object',
+                properties: { name: { type: 'string' }, surname: { type: 'string' } },
+                required: ['name', 'surname'],
               },
-              required: ['paziente', 'nota', 'data', 'ora'],
+              note: { type: 'string' },
             },
+            required: ['patient', 'note'],
           },
-          stop: ['<|im_end|>'], // Stop token
         },
-        (data) => {
-          // Streaming della risposta
-          setAiResponse((prev) => prev + data.token);
-        },
-      );
+        stop: ['<|im_end|>'],
+      });
 
-      console.log('[Llama] Risposta completa:', text);
-      return text;
+      console.log('[LlamaInference] Risposta completa:', text);
+      setResponse(text);
     } catch (e) {
-      console.error('[Llama] Inference error:', e);
-      setAiResponse('Errore elaborazione AI.');
+      setResponse('Errore elaborazione AI.');
+      setError(
+        e instanceof Error ? e.message : "[LlamaInference] Errore sconosciuto durante l'inferenza",
+      );
     } finally {
       setIsThinking(false);
-      setAiStatus('Pronto');
     }
   };
 
+  /**
+   * @description Pulisce lo stato visivo della risposta generata dall'AI (senza invalidare il contesto), preparandolo per una nuova richiesta di inferenza pulita.
+   * @returns {void}
+   */
+  const resetAi = () => {
+    setResponse('');
+  };
+
   return {
-    aiResponse,
-    aiStatus,
+    response,
+    status,
     isThinking,
-    isLlamaReady,
+    isReady,
     generateResponse,
+    resetAi,
+    error,
   };
 }

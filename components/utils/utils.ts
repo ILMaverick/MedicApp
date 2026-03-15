@@ -9,7 +9,7 @@ import { createDownloadResumable, FileSystemDownloadResult } from 'expo-file-sys
  * @returns {Directory} L'oggetto Directory puntato al path specificato.
  * @throws {Error} Se la document directory non è accessibile o la creazione fallisce.
  */
-const getModelsDirectory = (nameDir: string): Directory => {
+const getDirectory = (nameDir: string): Directory => {
   try {
     const documentDirectory = Paths.document;
     if (!documentDirectory) throw new Error('[Utils] Document directory non disponibile');
@@ -21,7 +21,7 @@ const getModelsDirectory = (nameDir: string): Directory => {
     return directory;
   } catch (error) {
     console.error('[Utils] Errore directory:', error);
-    throw new Error('[Utils] Impossibile creare la cartella modelli.');
+    throw new Error('[Utils] Impossibile creare la cartella.');
   }
 };
 
@@ -41,7 +41,7 @@ export const getFileFromUrlOrCache = async (
   url: string,
   dirFile: string,
 ): Promise<string> => {
-  const directory = getModelsDirectory(dirFile);
+  const directory = getDirectory(dirFile);
   const file = new File(directory, fileName);
 
   if (file.exists) {
@@ -67,6 +67,7 @@ export const getFileFromUrlOrCache = async (
     // Pulizia file corrotto/parziale in caso di errore
     if (file.exists) {
       file.delete();
+      console.log(`[Utils] Pulizia del file incompleto: ${file.name}`);
     }
     throw error;
   }

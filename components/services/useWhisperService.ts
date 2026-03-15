@@ -1,9 +1,12 @@
 /**
  * @module WhisperService
- * @description Gestisce il ciclo di vita dei modelli di registrazione e attivazione vocale (Whisper e VAD) e del Transcriber in tempo reale.
+ * @description Gestisce il ciclo di vita dei modelli vocali (Whisper/VAD) e la trascrizione in tempo reale interagendo con i moduli nativi in C++.
+ * @param {Function} [onRealtimeUpdate] - Callback opzionale invocata ad ogni nuovo frammento di testo trascritto in tempo reale.
+ * @param {Function} [onStatusChange] - Callback opzionale invocata per comunicare variazioni di stato del motore alla UI.
+ * @returns {Object} Istanze Ref dei modelli e funzioni per il loro ciclo di vita.
  */
-
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { Alert } from 'react-native';
 import {
   initWhisper,
   initWhisperVad,
@@ -13,137 +16,207 @@ import {
 import { getFileFromUrlOrCache } from '../utils/utils';
 import { RealtimeTranscriber } from 'whisper.rn/realtime-transcription/RealtimeTranscriber.js';
 import { AudioPcmStreamAdapter } from 'whisper.rn/realtime-transcription/adapters/AudioPcmStreamAdapter.js';
-import { Alert } from 'react-native';
+import { AppSettings } from '../context/SettingsContext';
+import { VAD_MODEL, WHISPER_MODELS } from '../utils/models';
 
 const MODELS_DIR = 'whisper-models';
-
-interface WhisperModel {
-  modelName: string;
-  description: string;
-  fileName: string;
-  url: string;
-}
-
-const WHISPER_MODELS: WhisperModel[] = [
-  {
-    modelName: 'tiny',
-    description: 'Il più veloce e leggero, ma il meno preciso',
-    fileName: 'ggml-tiny-q5_1.bin',
-    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin',
-  },
-  {
-    modelName: 'base',
-    description: 'Il giusto equilibrio',
-    fileName: 'ggml-base-q5_1.bin',
-    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin',
-  },
-  {
-    modelName: 'small',
-    description: 'Appena più preciso del base, ma più pesante',
-    fileName: 'ggml-small-q5_1.bin',
-    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin',
-  },
-  {
-    modelName: 'medium',
-    description: 'Il più preciso, ma anche il più pesante',
-    fileName: 'ggml-medium-q5_0.bin',
-    url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin',
-  },
-];
-
-const VAD_MODEL = {
-  url: 'https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin',
-  filename: 'ggml-silero-v6.2.0.bin',
-};
 
 export function useWhisperService(
   onRealtimeUpdate?: (text: string) => void,
   onStatusChange?: (status: string) => void,
 ) {
+  const whisperContextRef = useRef<WhisperContext | null>(null);
   const vadContextRef = useRef<WhisperVadContext | null>(null);
-  const [isVadContextReady, setisVadContextReady] = useState(false);
-
-  const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
-
   const transcriberRef = useRef<RealtimeTranscriber | null>(null);
 
-  // Refs per mantenere le callback aggiornate senza re-triggerare useEffect
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [isWhisperReady, setIsWhisperReady] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [isVadReady, setIsVadReady] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [isTranscriberReady, setIsTranscriberReady] = useState(false);
+
+  const currentNameModelRef = useRef<string | null>(null);
+
   const externalUpdateRef = useRef(onRealtimeUpdate);
   const externalStatusRef = useRef(onStatusChange);
 
+  /**
+   * @description Effetto di sincronizzazione: Mantiene aggiornate le reference interne alle funzioni di callback passate come argomento dall'esterno.
+   * Evita problemi di stale closure se i componenti padri si ri-renderizzano.
+   * @returns {void}
+   */
   useEffect(() => {
     externalUpdateRef.current = onRealtimeUpdate;
     externalStatusRef.current = onStatusChange;
   }, [onRealtimeUpdate, onStatusChange]);
 
-  // Helper per aggiornare lo stato
+  /**
+   * @description Helper interno per emettere messaggi di stato verso il componente chiamante.
+   * @param {string} msg - Il messaggio di stato da emettere.
+   * @returns {void}
+   */
   const updateStatus = (msg: string) => {
-    if (externalStatusRef.current) {
-      externalStatusRef.current(msg);
-    }
+    if (externalStatusRef.current) externalStatusRef.current(msg);
   };
 
   /**
-   * Inizializza il modello Whisper selezionato scaricandolo se necessario.
-   * Imposta lo stato `whisperContext`.
-   *
-   * @param {string} [modelName='base'] - Il nome del modello ('tiny', 'base', 'small', 'medium').
+   * @description Rilascia l'istanza del Transcriber dalla memoria RAM, fermando eventuali processi di ascolto attivi.
    * @async
    * @returns {Promise<void>}
-   * @throws {Error} Se il modello non esiste o il path è vuoto.
    */
-
-  const initWhisperContext = useCallback(async (modelName: string = 'base') => {
-    try {
-      console.log(`[WhisperService] Richiesto modello: ${modelName}`);
-      const model = WHISPER_MODELS.find((m) => m.modelName === modelName);
-
-      if (!model) throw new Error(`[WhisperService] Modello ${modelName} sconosciuto`);
-
-      updateStatus(`Verifica modello ${modelName}...`);
-
-      const whisperPath = await getFileFromUrlOrCache(model.fileName, model.url, MODELS_DIR);
-
-      console.log('[WhisperService] File pronto. Inizializzazione Context...');
-      updateStatus('Inizializzazione Motore di registrazione...');
-
-      if (whisperPath) {
-        const wContext = await initWhisper({ filePath: whisperPath });
-        setWhisperContext(wContext);
-        console.log('✅ Whisper Context Pronto');
-        updateStatus('Motore di registrazione Pronto');
-      } else {
-        throw new Error('Impossibile inizializzare il Whisper Context: path vuoto');
+  const cleanTranscriber = useCallback(async () => {
+    if (transcriberRef.current) {
+      try {
+        await transcriberRef.current.release();
+        console.log('[WhisperService] Pulizia del Transcriber effettuata');
+      } catch (e) {
+        console.warn('[WhisperService]Errore rilascio Transcriber:', e);
+      } finally {
+        transcriberRef.current = null;
+        if (isTranscriberReady) setIsTranscriberReady(false);
       }
-    } catch (e) {
-      console.error('[WhisperService] Errore critico Whisper:', e);
-      Alert.alert('Errore', 'Problema nel caricamento Whisper!');
-      updateStatus('Errore caricamento Whisper!');
     }
-  }, []);
+  }, [isTranscriberReady]);
 
   /**
-   * Inizializza il modello VAD (Voice Activity Detection).
-   * Imposta `isVadContextReady` a true al termine.
-   *
+   * @description Rilascia il contesto di Whisper (il modello acustico) dalla memoria RAM del dispositivo.
    * @async
    * @returns {Promise<void>}
-   * @throws {Error} Se il path del VAD è nullo.
+   */
+  const cleanWhisperContext = useCallback(async () => {
+    if (whisperContextRef.current) {
+      try {
+        await whisperContextRef.current.release();
+        console.log('[WhisperService] Pulizia del Whisper effettuata');
+      } catch (e) {
+        console.error('[WhisperService] Errore rilascio Whisper:', e);
+      } finally {
+        whisperContextRef.current = null;
+        if (isWhisperReady) setIsWhisperReady(false);
+      }
+    }
+  }, [isWhisperReady]);
+
+  /**
+   * @description Rilascia il contesto del Voice Activity Detection (Silero VAD) dalla memoria RAM del dispositivo.
+   * @async
+   * @returns {Promise<void>}
+   */
+  const cleanVADContext = useCallback(async () => {
+    if (vadContextRef.current) {
+      try {
+        await vadContextRef.current.release();
+        console.log('[WhisperService] Pulizia del VAD effettuata');
+      } catch (e) {
+        console.error('[WhisperService] Errore rilascio VAD Context:', e);
+      } finally {
+        vadContextRef.current = null;
+        if (isVadReady) setIsVadReady(false);
+      }
+    }
+  }, [isVadReady]);
+
+  /**
+   * @description Funzione aggregatore: richiama in sequenza i cleaner di tutte le risorse native (Transcriber, Whisper, VAD) per garantire un rilascio completo.
+   * @async
+   * @returns {Promise<void>}
+   */
+  const cleanAll = useCallback(async () => {
+    updateStatus('Rilascio risorse...');
+
+    await cleanTranscriber();
+    await cleanWhisperContext();
+    await cleanVADContext();
+
+    updateStatus('Risorse liberate');
+  }, [cleanTranscriber, cleanWhisperContext, cleanVADContext]);
+
+  /**
+   * @description Inizializza o aggiorna il modello Whisper selezionato. Gestisce autonomamente il download e l'allocazione C++ del contesto acustico.
+   * @async
+   * @param {string} [modelName='base'] - Il nome del modello da caricare (es. 'tiny', 'base', 'small').
+   * @returns {Promise<void>}
+   * @throws {Error} Lancia un'eccezione se il file del modello non viene trovato o l'allocazione fallisce.
+   */
+  const initWhisperModel = useCallback(
+    async (modelName: string) => {
+      try {
+        updateStatus(`Verifica modello Whisper ${modelName}...`);
+        setIsWhisperReady(false);
+        console.log(`[WhisperService] Richiesto modello: ${modelName}`);
+        const model = WHISPER_MODELS.find((m) => m.modelName === modelName);
+        if (!model) throw new Error(`[WhisperService] Modello ${modelName} sconosciuto`);
+
+        if (whisperContextRef.current) {
+          if (currentNameModelRef.current === modelName) {
+            console.log(`[WhisperService] Modello ${modelName} già caricato`);
+            setIsWhisperReady(true);
+            return;
+          }
+          await cleanWhisperContext();
+        }
+
+        const whisperPath = await getFileFromUrlOrCache(model.fileName, model.url, MODELS_DIR);
+
+        if (whisperPath) {
+          console.log('[WhisperService] File pronto. Inizializzazione Context...');
+          updateStatus('Inizializzazione Motore di registrazione...');
+          const wContext = await initWhisper({ filePath: whisperPath });
+
+          whisperContextRef.current = wContext;
+          currentNameModelRef.current = modelName;
+          setIsWhisperReady(true);
+          console.log('[WhisperService] ✅ Whisper Context Pronto');
+          updateStatus('Motore di registrazione Pronto');
+        } else {
+          setIsWhisperReady(false);
+          throw new Error('Impossibile inizializzare il Whisper Context: path vuoto');
+        }
+      } catch (e) {
+        setIsWhisperReady(false);
+        console.error('[WhisperService] Errore critico Whisper:', e);
+        Alert.alert('Errore', 'Problema nel caricamento Whisper!');
+        updateStatus('Errore caricamento Whisper!');
+      }
+    },
+    [cleanWhisperContext],
+  );
+
+  /**
+   * @description Inizializza il modello VAD (Voice Activity Detection), lo strumento che rileva il silenzio.
+   * @async
+   * @returns {Promise<void>}
+   * @throws {Error} Se il path del VAD scaricato risulta nullo.
    */
   const initVADContext = useCallback(async () => {
     try {
+      setIsVadReady(false);
+      updateStatus(`Verifica modello VAD`);
+      if (vadContextRef.current) {
+        console.log('[WhisperService] ✅ VAD Context già caricato');
+        setIsVadReady(true);
+        updateStatus('VAD Pronto');
+        return;
+      }
+
       console.log('[WhisperService] Avvio inizializzazione VAD...');
       updateStatus('Caricamento VAD...');
 
       const vadPath = await getFileFromUrlOrCache(VAD_MODEL.filename, VAD_MODEL.url, MODELS_DIR);
 
       if (vadPath) {
-        vadContextRef.current = await initWhisperVad({ filePath: vadPath });
-        console.log('✅ VAD Context Pronto');
-        setisVadContextReady(true);
+        const vContext = await initWhisperVad({ filePath: vadPath });
+        vadContextRef.current = vContext;
+        setIsVadReady(true);
+        console.log('[WhisperService] ✅ VAD Context Pronto');
         updateStatus('VAD Pronto');
-      } else throw new Error('[WhisperService] Path VAD nullo');
+      } else {
+        setIsVadReady(false);
+        throw new Error('[WhisperService] Path VAD nullo');
+      }
     } catch (e) {
+      setIsVadReady(false);
       console.error('[WhisperService] Errore critico VAD:', e);
       Alert.alert('Errore', 'Problema nel caricamento VAD!');
       updateStatus('Errore caricamento VAD');
@@ -151,35 +224,35 @@ export function useWhisperService(
   }, []);
 
   /**
-   * Istanzia e configura il `RealtimeTranscriber`.
-   * Esegue automaticamente il cleanup di eventuali istanze precedenti.
-   *
-   * @param {boolean} isLowEnd - Impostare a `true` per dispositivi con poca RAM (riduce slice audio).
+   * @description Istanzia il Transcriber che unisce Whisper e VAD elaborando lo stream audio. Esegue in automatico il cleanup di istanze precedenti per prevenire crash nativi.
    * @async
+   * @param {boolean} isLowEnd - Se true, ottimizza le dimensioni dello slice audio per dispositivi con poca RAM.
+   * @param {AppSettings} settings - Oggetto contenente le impostazioni globali dell'utente (es. continuousRecording).
    * @returns {Promise<void>}
    */
   const initRealTimeTranscriber = useCallback(
-    async (isLowEnd: boolean) => {
-      updateStatus('Avvio Servizi Audio...');
-      const audioStream = new AudioPcmStreamAdapter();
+    async (isLowEnd: boolean, settings: AppSettings) => {
+      setIsTranscriberReady(false);
+      updateStatus('Preparazione Transcriber...');
 
-      // Cleanup preventivo
       if (transcriberRef.current) {
-        console.log('[WhisperService] Ricaricamento Transcriber...');
-        try {
-          await transcriberRef.current.stop();
-        } finally {
-          transcriberRef.current = null;
-        }
+        console.log('[WhisperService] Pulizia Transcriber...');
+        await cleanTranscriber();
       }
 
-      if (whisperContext && vadContextRef.current) {
+      const audioStream = new AudioPcmStreamAdapter();
+
+      if (whisperContextRef.current && vadContextRef.current) {
         transcriberRef.current = new RealtimeTranscriber(
-          { whisperContext: whisperContext, vadContext: vadContextRef.current, audioStream },
+          {
+            whisperContext: whisperContextRef.current,
+            vadContext: vadContextRef.current,
+            audioStream,
+          },
           {
             audioSliceSec: isLowEnd ? 10 : 20,
             vadPreset: 'default',
-            autoSliceOnSpeechEnd: true,
+            autoSliceOnSpeechEnd: !settings.continuousRecording,
             transcribeOptions: { language: 'it' },
           },
           {
@@ -187,85 +260,40 @@ export function useWhisperService(
               const text = event.data?.result;
               if (text) {
                 externalUpdateRef.current?.(text);
-                console.log('[VoiceTranscription] Live:', text);
+                console.log(
+                  `[WhisperService] Live: ${new Date().toLocaleTimeString('it-IT')} - `,
+                  text,
+                );
               }
             },
             onError: (err) => {
-              console.error('[VoiceTranscription] Errore Transcriber :', err);
+              console.error('[WhisperService] Errore Transcriber :', err);
               updateStatus('Errore trascrizione');
             },
           },
         );
-        console.log('✅ Transcriber Pronto e Assegnato');
+        setIsTranscriberReady(true);
+        console.log('[WhisperService] ✅ Transcriber Pronto');
         updateStatus('Pronto a registrare');
       } else {
+        setIsTranscriberReady(false);
         console.warn('[WhisperService] Tentativo di init Transcriber senza contesti pronti');
         updateStatus('Errore: Modelli non pronti');
       }
     },
-    [whisperContext],
+    [cleanTranscriber],
   );
 
-  /**
-   * Ferma e rilascia il `RealtimeTranscriber`.
-   * @async
-   */
-  const cleanRealTimeTranscriber = useCallback(async () => {
-    if (transcriberRef.current) {
-      console.log('[VoiceTranscription] Pulizia: Chiusura Transcriber...');
-      updateStatus('Chiusura Audio...');
-      try {
-        await transcriberRef.current.stop();
-      } catch (e) {
-        console.warn('[VoiceTranscription] Stop Transcriber fallito (già chiuso?):', e);
-      }
-      transcriberRef.current = null;
-    }
-  }, []);
-
-  /**
-   * Rilascia il contesto Whisper.
-   * @async
-   */
-  const cleanWhisperContext = useCallback(async () => {
-    if (whisperContext) {
-      console.log('[VoiceTranscription] Pulizia: Rilascio del Whisper Context');
-      try {
-        await whisperContext.release();
-      } catch (e) {
-        console.error('[VoiceTranscription] Errore rilascio Whisper Context:', e);
-      }
-      setWhisperContext(null);
-    }
-  }, [whisperContext]);
-
-  /**
-   * Rilascia tutte le risorse.
-   * @async
-   */
-  const cleanAll = useCallback(async () => {
-    updateStatus('Rilascio risorse...');
-    await cleanRealTimeTranscriber();
-    await cleanWhisperContext();
-    if (vadContextRef.current) {
-      console.log('[VoiceTranscription] Pulizia: Rilascio del VAD Context');
-      try {
-        await vadContextRef.current.release();
-      } catch (e) {
-        console.error('[VoiceTranscription] Errore rilascio VAD Context:', e);
-      }
-      vadContextRef.current = null;
-    }
-  }, [cleanRealTimeTranscriber, cleanWhisperContext]);
-
   return {
-    whisperContext,
+    whisperContextRef,
     vadContextRef,
     transcriberRef,
-    isVadContextReady,
-    initWhisperModel: initWhisperContext,
+    initWhisperModel,
     initVADModel: initVADContext,
     initRealTimeTranscriber,
+    cleanTranscriber,
+    cleanWhisperContext,
+    cleanVADContext,
     cleanAll,
   };
 }

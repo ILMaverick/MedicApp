@@ -1,85 +1,101 @@
+/**
+ * @module VoiceTranscription
+ * @description Hook per il controllo del flusso di registrazione e trascrizione audio.
+ * @returns {Object} Metodi e stati per il controllo diretto della trascrizione (inizio, fine, errori, risultato).
+ */
 import { useState, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import { AudioModule } from 'expo-audio';
 import { useWhisperService } from '../services/useWhisperService';
+import { useSettings } from '../context/SettingsContext';
 import * as Device from 'expo-device';
 
 export function useVoiceTranscription() {
-  const [areModelsLoading, setAreModelsLoading] = useState<boolean>(true);
+  const [isVoiceTranscriptorReady, setisVoiceTranscriptorReady] = useState<boolean>(false);
   const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [status, setStatus] = useState<string>('Avvio Sistema...');
-
+  const [status, setStatus] = useState<string>('Avvio Transcriber...');
   const [realTimeResult, setRealtimeResult] = useState<string>('');
-  const [finalResult, setRealTimeFinalResult] = useState<string | null>(null); // serve anche null per la trascrizione live nella UI in homescreen.
   const [error, setError] = useState<string | null>(null);
 
-  const latestTextRef = useRef<string>('');
+  const { settings } = useSettings();
+  const finalResultRef = useRef<string | null>(null);
   const isMountedRef = useRef<boolean>(true);
 
-  // Iniezione del setStatus e dei risultati in tempo reale nel servizio
   const {
-    whisperContext,
+    whisperContextRef,
     transcriberRef,
-    isVadContextReady,
+    vadContextRef,
     initWhisperModel,
     initVADModel,
     initRealTimeTranscriber,
+    cleanTranscriber,
     cleanAll,
   } = useWhisperService(
     (text: string) => {
-      setRealtimeResult(text);
-      latestTextRef.current = text;
+      if (!finalResultRef.current) setRealtimeResult(text);
     },
-    (msg: string) => {
-      setStatus(msg);
-    },
+    (msg: string) => setStatus(msg),
   );
 
   const totalMemory = Device.totalMemory || 0;
   const isLowEnd = totalMemory > 0 && totalMemory < 4 * 1024 ** 3;
 
   /**
-   * Effetto: Caricamento iniziale dei modelli AI.
-   * Viene eseguito una sola volta al mount.
+   * @description Effetto "Unmount": All'uscita dal componente o chiusura dell'app, garantisce il rilascio sicuro di tutte le risorse C++ allocate (Modello Whisper, VAD, Transcriber) per prevenire memory leak nel dispositivo.
+   * @returns {Function} Funzione di cleanup asincrona.
    */
   useEffect(() => {
-    // isMountedRef.current = true;
+    const clean = async () => {
+      await cleanAll();
+    };
+    return () => {
+      clean();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * @description Effetto "Mount/Update": Gestisce il caricamento iniziale dei modelli AI vocali e si ri-attiva nel caso in cui l'utente cambi il modello selezionato dalle impostazioni.
+   * Monitora inoltre se il componente è ancora montato prima di aggiornare gli stati.
+   * @returns {Function} Funzione per invalidare la reference se il componente viene smontato durante il caricamento.
+   */
+  useEffect(() => {
+    isMountedRef.current = true;
 
     const loadModels = async () => {
       try {
-        setAreModelsLoading(true);
+        setisVoiceTranscriptorReady(false);
         setStatus('Caricamento Modelli Whisper...');
         // I messaggi di stato vengono gestiti dentro initWhisperModel/initVADModel tramite onStatusChange()
-        if (!whisperContext) await initWhisperModel();
-        if (!isVadContextReady) await initVADModel();
-      } catch (err) {
-        console.error('[VoiceTranscription] Errore caricamento modelli', err);
-        setError('Impossibile caricare i modelli AI');
+        await initWhisperModel(settings.whisperModel);
+        await initVADModel();
+        setStatus('Modelli Whisper e VAD pronti');
+      } catch (e) {
+        console.error('[VoiceTranscription] Errore caricamento modelli', e);
+        setError('Impossibile caricare i modelli Whisper e VAD');
         setStatus('Errore Modelli');
       } finally {
-        // if (isMountedRef.current) {
-        setAreModelsLoading(false);
-        // }
+        if (isMountedRef.current) setisVoiceTranscriptorReady(true);
       }
     };
 
     loadModels();
 
     return () => {
-      // isMountedRef.current = false;
-      cleanAll();
+      isMountedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [settings.whisperModel]);
 
   /**
-   * Avvia la trascrizione in tempo reale.
-   * Crea un'istanza pulita del Transcriber se non esiste.
+   * @description Avvia la registrazione instanziando il transcriber con le impostazioni correnti. Chiede i permessi per il microfono ed effettua la creazione di una nuova istanza C++ se non esiste.
    * @async
+   * @returns {Promise<void>}
+   * @throws {Error} Se l'inizializzazione del Transcriber fallisce internamente o mancano i permessi.
    */
-  const startRealtimeTranscription = async () => {
+  const startRealtimeTranscription = async (): Promise<void> => {
     try {
-      setStatus('Richiesta permessi...');
+      setStatus('Richiesta permessi microfono');
       const permission = await AudioModule.requestRecordingPermissionsAsync();
       if (permission.status !== 'granted') {
         Alert.alert('Permesso negato', 'Abilita il microfono nelle impostazioni.');
@@ -87,83 +103,77 @@ export function useVoiceTranscription() {
         return;
       }
 
-      if (!whisperContext || !isVadContextReady) {
+      if (!whisperContextRef.current || !vadContextRef.current) {
         Alert.alert('Attendi', 'Modelli AI non ancora caricati.');
+        setStatus('Modelli mancanti');
         return;
       }
+
+      setError(null);
+      setRealtimeResult('');
+      setIsRecording(true);
+      finalResultRef.current = null;
+      setStatus('In ascolto...');
 
       if (!transcriberRef.current) {
         console.log('[VoiceTranscription] Creazione nuova istanza Transcriber...');
         // initRealTimeTranscriber aggiornerà lo status internamente
-        await initRealTimeTranscriber(isLowEnd);
+        await initRealTimeTranscriber(isLowEnd, settings);
       }
 
-      if (!transcriberRef.current) {
-        throw new Error('Inizializzazione Transcriber fallita');
-      }
-
-      // Reset Stato
-      setError(null);
-      setRealtimeResult('');
-      latestTextRef.current = '';
-      setRealTimeFinalResult(null);
-      setIsRecording(true);
-      setStatus('In ascolto...');
+      if (!transcriberRef.current) throw new Error('Inizializzazione Transcriber fallita');
 
       await transcriberRef.current.start();
       console.log('[VoiceTranscription] Trascrizione Live avviata');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[VoiceTranscription] Errore start:`, msg);
+      console.error(`[VoiceTranscription] Errore avvio trascrizione:`, msg);
       setError(msg);
       setIsRecording(false);
-      setStatus('Errore avvio');
-      transcriberRef.current = null;
+      setStatus('Errore avvio trascrizione');
     }
   };
 
   /**
-   * Ferma la trascrizione.
-   * Attende 2 sec. per permettere all'AI di elaborare gli ultimi chunk audio (flush).
+   * @description Ferma la registrazione attiva e chiude il motore di ascolto. Gestisce un ritardo fittizio ("flush") per consentire alla pipeline di decodificare l'audio residuo prima di trarre il risultato finale.
    * @async
+   * @param {boolean} [saveNote=false] - Flag indicativo. Se true, solidifica il risultato in `finalResultRef`. Se false, la trascrizione viene scartata.
+   * @returns {Promise<void>}
    */
-  const stopRealtimeTranscription = async (isCancelled: boolean = false) => {
+  const stopRealtimeTranscription = async (saveNote: boolean = false): Promise<void> => {
     try {
-      setStatus('Elaborazione finale...');
-
-      if (transcriberRef.current) {
-        await transcriberRef.current.stop();
-      }
+      if (transcriberRef.current) await cleanTranscriber();
 
       // Attendo il Transcriber che fisce l'elaborazione
       console.log('[VoiceTranscription] Attesa flush Transcriber...');
-      setTimeout(() => 2000);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
 
-      const final = latestTextRef.current.trim();
-
-      if (final) {
-        setRealTimeFinalResult(final);
-        console.log('[VoiceTranscription] Trascrizione salvata:', final);
+      const result = realTimeResult.trim();
+      if (saveNote && result !== '') {
+        finalResultRef.current = result;
+        setStatus('Registrazione Salvata');
+        console.log('[VoiceTranscription] Registrazione salvata');
+        return;
       }
 
-      // Distruzione istanza per evitare bug audio al riavvio
-      transcriberRef.current = null;
-      setStatus('Trascrizione salvata');
-      console.log('[VoiceTranscription] Stop completato');
-      setIsRecording(false);
+      setStatus('Registrazione annullata');
+      console.log('[VoiceTranscription] Registrazione annullata');
     } catch (err) {
-      console.error('[VoiceTranscription] Errore stop:', err);
-      transcriberRef.current = null;
+      console.error('[VoiceTranscription] Errore annullamento Transcriber:', err);
+      setStatus('Errore annullamento Transcriber');
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+    } finally {
       setIsRecording(false);
-      setStatus('Errore stop');
+      setRealtimeResult('');
     }
   };
 
   return {
     isRecording,
-    areModelsLoading,
+    isVoiceTranscriptorReady,
     realTimeResult,
-    finalResult,
+    finalResult: finalResultRef.current,
     status,
     error,
     startRealtimeTranscription,

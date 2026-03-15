@@ -1,95 +1,191 @@
-import { useEffect, useState } from 'react';
+/**
+ * @module TranscriptionController
+ * @description Controller che funge da ponte tra la UI, l'acquisizione vocale (Whisper) e l'elaborazione AI (Llama).
+ * @returns {Object} Oggetto contenente gli stati consolidati per la UI e le funzioni di avvio/stop della trascrizione.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 import { useLlamaInference } from '../hooks/useLlamaInference';
+import { useHistory } from '../context/HistoryContext';
 
 export function useTranscriptionController() {
   const transcription = useVoiceTranscription();
   const ai = useLlamaInference();
+  const { addNote } = useHistory();
 
-  // Stato per nascondere il testo se l'utente annulla la nota
+  const hasSavedRef = useRef(false);
   const [isCancelled, setIsCancelled] = useState(false);
-  // Stato per ricordare all'app che deve far partire l'AI appena Whisper si ferma
   const [isConfirmed, setIsConfirmed] = useState(false);
 
-  const isGlobalLoading = transcription.areModelsLoading || !ai.isLlamaReady;
+  const appState = useRef(AppState.currentState);
+  const isRecordingRef = useRef(transcription.isRecording);
+
+  const isGlobalLoading = !transcription.isVoiceTranscriptorReady || !ai.isReady;
   const isBusy = transcription.isRecording || ai.isThinking;
 
   // Status combinati per averne uno solo da mostrare
   const currentStatus = ai.isThinking
-    ? ai.aiStatus
+    ? ai.status
     : transcription.isRecording
       ? 'Ti ascolto...'
       : isGlobalLoading
-        ? transcription.status + ' - ' + ai.aiStatus
+        ? `${transcription.status} - ${ai.status}`
         : 'Pronto';
 
-  // Funzione per quando l'utente avvia la registrazione
-  const handleStart = async () => {
+  /**
+   * @description Avvia una nuova sessione di registrazione audio tramite il RealtimeTranscription di Whisper.
+   * @async
+   * @returns {Promise<void>}
+   */
+  const handleStart = async (): Promise<void> => {
     setIsCancelled(false);
     setIsConfirmed(false);
+    hasSavedRef.current = false;
     await transcription.startRealtimeTranscription();
   };
 
-  // Funzione per quando l'utente annulla la registrazione. La trascrizione effettuata fino ad adesso viene cancellata.
-  const handleCancel = async () => {
+  /**
+   * @description Interrompe la registrazione in corso senza salvare la nota finale, scartando quanto detto fino a quel momento.
+   * @async
+   * @returns {Promise<void>}
+   */
+  const handleCancel = async (): Promise<void> => {
     setIsCancelled(true);
     if (transcription.isRecording) {
-      await transcription.stopRealtimeTranscription();
+      await transcription.stopRealtimeTranscription(false);
     }
   };
 
-  // Funzione per quando l'utente conferma la registrazione
-  const handleConfirm = async () => {
-    if (transcription.isRecording) {
-      await transcription.stopRealtimeTranscription();
-      setIsConfirmed(true);
-    }
-  };
+  const handleCancelRef = useRef(handleCancel);
 
-  // Aspetta che Whisper sia completamente fermo e abbia prodotto il testo finale. Successivamente fa partire Llama.
+  /**
+   * @description Effetto di sincronizzazione: Aggiorna la reference di `handleCancel` ad ogni render.
+   * Questo garantisce che i listener in background usino sempre la versione più recente della funzione.
+   * @returns {void}
+   */
   useEffect(() => {
-    if (isConfirmed && !transcription.isRecording && transcription.finalResult && ai.isLlamaReady) {
-      console.log('[Transcription Controller] Trascrizione finita. Avvio AI...');
+    handleCancelRef.current = handleCancel;
+  });
+
+  /**
+   * @description Ferma la registrazione attiva e richiede il salvataggio della trascrizione finale per permettere all'AI di elaborarla.
+   * @async
+   * @returns {Promise<void>}
+   */
+  const handleConfirm = async (): Promise<void> => {
+    if (transcription.isRecording) {
+      await transcription.stopRealtimeTranscription(true);
+      setIsConfirmed(true);
+      console.log('[Transcription Controller] Trascrizione finita.');
+    }
+  };
+
+  /**
+   * @description Effetto di sincronizzazione: Mantiene allineato il `Ref` di `isRecording` con lo stato effettivo fornito dall'hook di trascrizione.
+   * @returns {void}
+   */
+  useEffect(() => {
+    isRecordingRef.current = transcription.isRecording;
+  }, [transcription.isRecording]);
+
+  /**
+   * @description Effetto "Mount": Crea un ascoltatore globale di sistema (`AppState`) per monitorare se l'app viene messa in background.
+   * In tal caso, disattiva automaticamente il microfono per prevenire crash nativi o registrazioni involontarie.
+   * @returns {Function} Funzione di cleanup per rimuovere il listener alla distruzione del componente.
+   */
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', async (nextAppState) => {
+      if (appState.current === 'active' && nextAppState === 'background') {
+        console.log('[Transcription Controller] App andata in background.');
+
+        if (isRecordingRef.current) {
+          console.log(
+            '[Transcription Controller] Interruzione registrazione per app in background.',
+          );
+          await handleCancelRef.current();
+        }
+      }
+
+      appState.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * @description Effetto logico: Monitora la fine della registrazione e l'eventuale conferma dell'utente.
+   * Se le condizioni sono soddisfatte (nota confermata e modelli pronti), avvia automaticamente l'inferenza AI passando il testo finale trascritto.
+   * @returns {void}
+   */
+  useEffect(() => {
+    if (isConfirmed && !transcription.isRecording && transcription.finalResult && ai.isReady) {
+      console.log('[Transcription Controller] Avvio generazione risposta AI...');
       ai.generateResponse(transcription.finalResult);
     }
-  }, [transcription.isRecording, transcription.finalResult, ai.isLlamaReady, isConfirmed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcription.isRecording, transcription.finalResult, ai.isReady, isConfirmed]);
 
   // Determina cosa mostrare a video (nasconde se annullato)
-  const displayTranscription = isCancelled
+  const transcriptionText = isCancelled
     ? ''
     : transcription.realTimeResult || transcription.finalResult;
 
-  // Appena la trascrizione finisce, parte la risposta dell'AI
-  // useEffect(() => {
-  //   if (transcription.finalResult && ai.isLlamaReady) {
-  //     console.log(
-  //       '[Transcription Controller] Trascrizione Whisper terminata. Generazione risposta AI',
-  //     );
-  //     ai.generateResponse(transcription.finalResult);
-  //   }
-  // }, [transcription.finalResult, ai.isLlamaReady]);
-
   /**
-   * Gestisce il toggle della registrazione (Start/Stop).
-   * @async
+   * @description Effetto logico: Monitora il completamento dell'elaborazione AI.
+   * Quando l'AI restituisce una risposta, cerca di parsarla come JSON e di salvarla nello storico tramite il context `addNote`.
+   * Gestisce anche il blocco di eventuali output non validi e resetta lo stato AI alla fine.
+   * @returns {void}
    */
+  useEffect(() => {
+    if (
+      isConfirmed &&
+      !ai.isThinking &&
+      ai.response &&
+      transcription.finalResult &&
+      !hasSavedRef.current &&
+      !ai.error
+    ) {
+      try {
+        const trimmedResponse = ai.response.trim();
+
+        if (trimmedResponse.startsWith('{')) {
+          const parsedAiResponse = JSON.parse(trimmedResponse);
+          addNote(transcription.finalResult, parsedAiResponse);
+          hasSavedRef.current = true;
+          console.log('[Transcription Controller] Nota salvata con successo!');
+        } else {
+          console.warn(
+            "[Transcription Controller] La risposta dell'AI non è un JSON valido. Risposta ricevuta:",
+            trimmedResponse,
+          );
+        }
+      } catch (error) {
+        console.error("Errore nel parsing del JSON dell'AI durante il salvataggio:", error);
+      } finally {
+        ai.resetAi();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ai.isThinking, ai.response, transcription.finalResult, isConfirmed, ai.error, addNote]);
 
   return {
-    transcriptionText: displayTranscription,
-    aiResponse: ai.aiResponse,
+    transcriptionText,
+    aiResponse: ai.response,
     status: currentStatus,
-
     isRecording: transcription.isRecording,
     isThinking: ai.isThinking,
     isLoadingModels: isGlobalLoading,
     canRecord: !isGlobalLoading && !isBusy,
-
+    hasSavedRef,
     handleStart,
     handleConfirm,
     handleCancel,
-
     debug: {
-      isLlamaReady: ai.isLlamaReady,
+      isLlamaReady: ai.isReady,
       error: transcription.error,
     },
   };

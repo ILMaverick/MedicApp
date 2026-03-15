@@ -7,16 +7,31 @@
 
 import React from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
-
+import { NavigationContainer } from '@react-navigation/native';
 import './global.css';
-import HomeScreen from './components/view/homeScreen';
+
+import { AuthProvider } from './components/context/AuthContext';
+import RootNavigator from './components/navigation/RootNavigator';
+import { StatusBar } from 'react-native';
+import { UserProvider } from './components/context/UserContext';
+import { HistoryProvider } from './components/context/HistoryContext';
+import { SettingsProvider } from './components/context/SettingsContext';
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <HomeScreen />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" />
+      <AuthProvider>
+        <UserProvider>
+          <SettingsProvider>
+            <HistoryProvider>
+              <NavigationContainer>
+                <RootNavigator />
+              </NavigationContainer>
+            </HistoryProvider>
+          </SettingsProvider>
+        </UserProvider>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
