@@ -59,7 +59,7 @@ eas build -p android --profile preview
 ## 📱 Modalità d'Uso
 
 ### Autenticazione (Ambiente di Test)
-L'app include un database mock per testarne le funzionalità. Usa queste credenziali per accedere:
+L'app include un database mock per testarne le funzionalità. Usa una di queste credenziali per accedere:
 * **Email1**: `mario.rossi@clinica.it`
   * **Password**: `Password1!`
 
