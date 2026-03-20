@@ -1,5 +1,9 @@
 import { Directory, File, Paths } from 'expo-file-system';
-import { createDownloadResumable, FileSystemDownloadResult } from 'expo-file-system/legacy';
+import {
+  createDownloadResumable,
+  DownloadProgressData,
+  FileSystemDownloadResult,
+} from 'expo-file-system/legacy';
 
 /**
  * Assicura che la directory specificata esista nel file system locale.
@@ -40,18 +44,32 @@ export const getFileFromUrlOrCache = async (
   fileName: string,
   url: string,
   dirFile: string,
+  onProgress?: (percent: number) => void,
 ): Promise<string> => {
   const directory = getDirectory(dirFile);
   const file = new File(directory, fileName);
 
   if (file.exists) {
     console.log(`[Utils] File in cache: ${fileName}`);
+    if (onProgress) onProgress(100);
     return file.uri;
   }
 
   console.log(`[Utils] Inizio download: ${fileName}`);
   try {
-    const downloadResumable = createDownloadResumable(url, file.uri);
+    const progressCallback = (downloadProgress: DownloadProgressData) => {
+      const progress =
+        downloadProgress.totalBytesWritten / downloadProgress.totalBytesExpectedToWrite;
+      const percentage = Math.floor(progress * 100);
+      if (onProgress) onProgress(percentage);
+    };
+
+    const downloadResumable = createDownloadResumable(
+      url,
+      file.uri,
+      {}, // opzioni di base vuote
+      progressCallback,
+    );
 
     const result = (await downloadResumable.downloadAsync()) as
       | FileSystemDownloadResult

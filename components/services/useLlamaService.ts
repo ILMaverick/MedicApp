@@ -3,7 +3,7 @@
  * @description Gestisce l'inizializzazione, il ciclo di vita e il rilascio del modello SLM (Small Language Model) locale interagendo con i binding C++ di llama.rn.
  * @returns {Object} Oggetto contenente la reference al modello C++ e le funzioni di lifecycle.
  */
-import { useCallback, useState, useRef } from 'react';
+import { useCallback, useState, useRef, useEffect } from 'react';
 import { initLlama, LlamaContext } from 'llama.rn';
 import { getFileFromUrlOrCache } from '../utils/utils';
 
@@ -31,12 +31,32 @@ const LLAMA_MODELS: LlamaModel[] = [
   },
 ];
 
-export function useLlamaService() {
+export function useLlamaService(onStatusChange?: (status: string) => void) {
   const llamaModelRef = useRef<LlamaContext | null>(null);
   // State fittizio usato solo per il re-render del componente
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [isLlamaReady, setIsLlamaReady] = useState(false);
   const currentLlamaModelRef = useRef<string | null>(null);
+
+  const externalStatusRef = useRef(onStatusChange);
+
+  /**
+   * @description Effetto di sincronizzazione: Mantiene aggiornate le reference interne alle funzioni di callback passate come argomento dall'esterno.
+   * Evita problemi se i componenti padri si ri-renderizzano.
+   * @returns {void}
+   */
+  useEffect(() => {
+    externalStatusRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  /**
+   * @description Helper interno per emettere messaggi di stato verso il componente chiamante.
+   * @param {string} msg - Il messaggio di stato da emettere.
+   * @returns {void}
+   */
+  const updateStatus = (msg: string): void => {
+    if (externalStatusRef.current) externalStatusRef.current(msg);
+  };
 
   /**
    * @description De-alloca in modo sicuro l'istanza di Llama dalla memoria RAM del dispositivo per prevenire i leak.
@@ -85,7 +105,12 @@ export function useLlamaService() {
         }
 
         console.log('[LlamaService] Controllo file modello...');
-        const fileUri = await getFileFromUrlOrCache(model.fileName, model.url, MODELS_DIR);
+        const fileUri = await getFileFromUrlOrCache(
+          model.fileName,
+          model.url,
+          MODELS_DIR,
+          (percent) => updateStatus(`Download Llama: ${percent}%`),
+        );
 
         // Inizializzazione context
         console.log('[LlamaService] Inizializzazione context...');

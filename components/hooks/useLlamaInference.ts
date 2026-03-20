@@ -15,7 +15,7 @@ export function useLlamaInference() {
   const [error, setError] = useState<string | null>(null);
 
   const { settings } = useSettings();
-  const { llamaModelRef, initLlamaContext } = useLlamaService();
+  const { llamaModelRef, initLlamaContext } = useLlamaService((msg) => setStatus(msg));
   const isMountedRef = useRef<boolean>(true);
 
   /**
@@ -121,7 +121,7 @@ Testo da analizzare: "${userText}"
    * @description Pulisce lo stato visivo della risposta generata dall'AI (senza invalidare il contesto), preparandolo per una nuova richiesta di inferenza pulita.
    * @returns {void}
    */
-  const resetAi = () => {
+  const resetAi = (): void => {
     setResponse('');
   };
 

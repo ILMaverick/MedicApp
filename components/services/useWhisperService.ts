@@ -43,7 +43,7 @@ export function useWhisperService(
 
   /**
    * @description Effetto di sincronizzazione: Mantiene aggiornate le reference interne alle funzioni di callback passate come argomento dall'esterno.
-   * Evita problemi di stale closure se i componenti padri si ri-renderizzano.
+   * Evita problemi se i componenti padri si ri-renderizzano.
    * @returns {void}
    */
   useEffect(() => {
@@ -56,7 +56,7 @@ export function useWhisperService(
    * @param {string} msg - Il messaggio di stato da emettere.
    * @returns {void}
    */
-  const updateStatus = (msg: string) => {
+  const updateStatus = (msg: string): void => {
     if (externalStatusRef.current) externalStatusRef.current(msg);
   };
 
@@ -157,7 +157,12 @@ export function useWhisperService(
           await cleanWhisperContext();
         }
 
-        const whisperPath = await getFileFromUrlOrCache(model.fileName, model.url, MODELS_DIR);
+        const whisperPath = await getFileFromUrlOrCache(
+          model.fileName,
+          model.url,
+          MODELS_DIR,
+          (percent) => updateStatus(`Download Motore di Registrazione: ${percent}%`),
+        );
 
         if (whisperPath) {
           console.log('[WhisperService] File pronto. Inizializzazione Context...');
@@ -203,7 +208,12 @@ export function useWhisperService(
       console.log('[WhisperService] Avvio inizializzazione VAD...');
       updateStatus('Caricamento VAD...');
 
-      const vadPath = await getFileFromUrlOrCache(VAD_MODEL.filename, VAD_MODEL.url, MODELS_DIR);
+      const vadPath = await getFileFromUrlOrCache(
+        VAD_MODEL.filename,
+        VAD_MODEL.url,
+        MODELS_DIR,
+        (percent) => updateStatus(`Download VAD: ${percent}%`),
+      );
 
       if (vadPath) {
         const vContext = await initWhisperVad({ filePath: vadPath });
