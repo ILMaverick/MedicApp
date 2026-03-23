@@ -72,7 +72,7 @@ export default function HomeScreen(): React.JSX.Element {
           )}
         </View>
 
-        <View className="flex-1 bg-white rounded-2xl p-5 shadow-sm border border-slate-100 mb-4">
+        <View className="flex-2 bg-white rounded-2xl p-5 shadow-sm border border-slate-100 mb-4">
           <Text
             className={`text-lg leading-8 ${controller.isRecording ? 'text-slate-800' : 'text-slate-600'}`}
           >
