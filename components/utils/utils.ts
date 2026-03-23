@@ -3,6 +3,7 @@ import {
   createDownloadResumable,
   DownloadProgressData,
   FileSystemDownloadResult,
+  writeAsStringAsync,
 } from 'expo-file-system/legacy';
 
 /**
@@ -49,8 +50,16 @@ export const getFileFromUrlOrCache = async (
   const directory = getDirectory(dirFile);
   const file = new File(directory, fileName);
 
-  if (file.exists) {
-    console.log(`[Utils] File in cache: ${fileName}`);
+  const doneFile = new File(directory, `${fileName}.done`);
+
+  if (file.exists && !doneFile.exists) {
+    console.warn(`[Utils] Rilevato file incompleto/corrotto per ${fileName}.`);
+    file.delete(); // Elimina il modello a metà
+    console.warn(`[Utils] ${fileName} cancellato.`);
+  }
+
+  if (file.exists && doneFile.exists) {
+    console.log(`[Utils] File in cache pronto e integro: ${fileName}`);
     if (onProgress) onProgress(100);
     return file.uri;
   }
@@ -80,13 +89,14 @@ export const getFileFromUrlOrCache = async (
     }
 
     console.log(`[Utils] Download completato: ${fileName}`);
+    await writeAsStringAsync(doneFile.uri, 'COMPLETATO');
+
     return result.uri;
   } catch (error) {
     // Pulizia file corrotto/parziale in caso di errore
-    if (file.exists) {
-      file.delete();
-      console.log(`[Utils] Pulizia del file incompleto: ${file.name}`);
-    }
+    if (file.exists) file.delete();
+    if (doneFile.exists) doneFile.delete();
+    console.log(`[Utils] Pulizia del file incompleto: ${file.name}`);
     throw error;
   }
 };

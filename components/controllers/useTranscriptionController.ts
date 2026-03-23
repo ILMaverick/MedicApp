@@ -30,7 +30,7 @@ export function useTranscriptionController() {
     : transcription.isRecording
       ? 'Ti ascolto...'
       : isGlobalLoading
-        ? `${transcription.status}\\n - \\n${ai.status}`
+        ? `${transcription.status}\n-\n${ai.status}`
         : 'Pronto';
 
   /**
